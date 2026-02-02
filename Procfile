@@ -1,0 +1,1 @@
+web: streamlit run Formasalidor_app.py --server.port $PORT --server.headless true
