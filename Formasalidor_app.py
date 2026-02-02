@@ -10,8 +10,7 @@ import unicodedata
 
 # --- CONFIGURACIÓN DE LA RUTA_ABSOLUTA ---
 # Cambiado a la ruta absoluta especificada por el usuario
-RUTA_CSV = r'C:\Users\Personal\Documents\Loteria\Loterias\Cerebro\Formasalidor\Geosalidor.csv' 
-
+RUTA_CSV = 'Geosalidor.csv'
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     page_title="Georgia - Análisis Fusionado",
@@ -1315,4 +1314,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
