@@ -1082,4 +1082,10 @@ Fecha;Sorteo;Resultado ;Decena;Unidad;Paridad D;Altura D;Forma D;Paridad U;Altur
 31/1/2026;N;73;7;3;Impar;Alto;Recto;Impar;Bajo;Abierto;6;3;Muy Vencido;Normal;Muy Vencido-Normal;RA;Normal;1;Normal;2;1;Sabado;31/1/2026;N;73;AltoBajo-Impar-Impar;2;Normal;AltoBajo-Impar-Impar;2;
 1/2/2026;M;48;4;8;Par;Bajo;Recto;Par;Alto;Cerrado;2;4;Normal;Vencido;Normal-Vencido;RC;Normal;3;Normal;1;2;Domingo;1/2/2026;M;48;BajoAlto-Par-Par;4;Sin Datos;BajoAlto-Par-Par;4;Sin Datos
 1/2/2026;T;76;7;6;Impar;Alto;Recto;Par;Alto;Cerrado;1;3;Normal;Normal;Normal-Normal;RC;Normal;4;Normal;2;0;Domingo;1/2/2026;T;76;AltoAlto-Impar-Par;8;Sin Datos;AltoAlto-Impar-Par;8;Sin Datos
-1/2/2026;N;02;0;2;Par;Bajo;Cerrado;Par;Bajo;Abierto;2;1;Normal;Normal;Normal-Normal;CA;Normal;2;Normal;1;1;Domingo;1/2/2026;N;02;BajoBajo-Par-Par;5;Sin Datos;BajoBajo-Par-Par;5;Sin Datos
+1/2/2026;N;2;0;2;Par;Bajo;Cerrado;Par;Bajo;Abierto;2;1;Normal;Normal;Normal-Normal;CA;Normal;2;Normal;1;1;Domingo;1/2/2026;N;2;BajoBajo-Par-Par;5;Sin Datos;BajoBajo-Par-Par;5;Sin Datos
+1/2/2026;M;48;4;8;Par;Bajo;Recto;Par;Alto;Cerrado;0;0;Normal;Normal;Normal-Normal;RC;Normal;3;Normal;0;0;Domingo ;1/2/2026;M;48;BajoAlto-Par-Par;0;Normal;BajoAlto-Par-Par;0;Normal
+1/2/2026;T;76;7;6;Impar;Alto;Recto;Par;Alto;Cerrado;0;0;Normal;Normal;Normal-Normal;RC;Normal;4;Normal;0;0;Domingo ;1/2/2026;T;76;AltoAlto-Impar-Par;0;Normal;AltoAlto-Impar-Par;0;Normal
+1/2/2026;N;02;0;2;Par;Bajo;Cerrado;Par;Bajo;Abierto;0;0;Normal;Normal;Normal-Normal;CA;Normal;2;Normal;0;0;Domingo ;1/2/2026;N;02;BajoBajo-Par-Par;0;Normal;BajoBajo-Par-Par;0;Normal
+2/2/2026;M;34;3;4;Impar;Bajo;Abierto;Par;Bajo;Recto;7;5;Muy Vencido;Muy Vencido;Muy Vencido-Muy Vencido;AR;Normal;7;Vencida;4;2;Lunes;2/2/2026;M;34;BajoBajo-Impar-Par;3;Normal;BajoBajo-Impar-Par;3;Normal
+2/2/2026;T;32;3;2;Impar;Bajo;Abierto;Par;Bajo;Abierto;0;1;Normal;Normal;Normal-Normal;AA;Vencido;5;Vencida;3;6;Lunes;2/2/2026;T;32;BajoBajo-Impar-Par;0;Normal;BajoBajo-Impar-Par;0;Normal
+2/2/2026;N;23;2;3;Par;Bajo;Abierto;Impar;Bajo;Abierto;2;2;Normal;Normal;Normal-Normal;AA;Normal;5;Normal;0;0;Lunes;2/2/2026;N;23;BajoBajo-Par-Impar;2;Vencido;BajoBajo-Par-Impar;2;Vencido
