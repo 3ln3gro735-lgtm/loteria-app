@@ -7,10 +7,13 @@ import os
 import traceback
 from collections import defaultdict, Counter
 import unicodedata
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# --- CONFIGURACIÓN DE LA RUTA_ABSOLUTA ---
-# Cambiado a la ruta absoluta especificada por el usuario
-RUTA_CSV = 'Geosalidor.csv'
+# --- CONFIGURACIÓN DE LA RUTA_RELATIVA ---
+# Ruta relativa para compatibilidad con la nube
+RUTA_CSV = 'Geosalidor.csv' 
+
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     page_title="Georgia - Análisis Fusionado",
@@ -328,11 +331,12 @@ def get_full_state_dataframe(df_historial, fecha_referencia):
     st.info(f"Calculando estado completo de todos los números hasta: {fecha_referencia.strftime('%d/%m/%Y')}")
     df_historial_filtrado = df_historial[df_historial['Fecha'] < fecha_referencia].copy()
     if df_historial_filtrado.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), {}, {}
 
     # --- CORRECCIÓN CLAVE: CREAR CLAVE DE ORDEN CRONOLÓGICO PRECISA ---
     # Esto permite diferenciar entre los sorteos del mismo día (M, T, N)
     if 'Tipo_Sorteo' in df_historial_filtrado.columns:
+        # CAMBIO: Mapa de orden de sorteos actualizado para M, T, N
         draw_order_map = {'M': 0, 'T': 1, 'N': 2}
         # Rellenar valores nulos con un número alto para que se ordenen al final
         df_historial_filtrado['draw_order'] = df_historial_filtrado['Tipo_Sorteo'].map(draw_order_map).fillna(3)
@@ -397,6 +401,17 @@ def get_full_state_dataframe(df_historial, fecha_referencia):
     ultima_aparicion_uni_key.fillna(primera_fecha_historica, inplace=True)
     gap_uni = (fecha_referencia - ultima_aparicion_uni_key).dt.days
     df_maestro['Estado_Unidad'] = df_maestro.apply(lambda row: calcular_estado_actual(gap_uni[row['Unidad']], historicos_unidad[row['Unidad']]), axis=1)
+    
+    # --- NUEVO: APLICAR CONFIGURACIÓN MANUAL DE DÍGITOS ---
+    st.info("Aplicando configuración manual de estados de dígitos (si existe)...")
+    for i in range(10):
+        manual_state_dec = st.session_state.get(f'estado_decena_{i}', 'Automático (Calcular)')
+        if manual_state_dec != 'Automático (Calcular)':
+            df_maestro.loc[df_maestro['Decena'] == i, 'Estado_Decena'] = manual_state_dec
+
+        manual_state_uni = st.session_state.get(f'estado_unidad_{i}', 'Automático (Calcular)')
+        if manual_state_uni != 'Automático (Calcular)':
+            df_maestro.loc[df_maestro['Unidad'] == i, 'Estado_Unidad'] = manual_state_uni
     
     # Recalcular el estado combinado ya que los componentes pudieron haber cambiado
     df_maestro['Combinar_Estado_Actual'] = df_maestro['Estado_Decena'] + '-' + df_maestro['Estado_Unidad']
@@ -563,8 +578,7 @@ def analizar_oportunidad_por_digito(df_historial, df_estados_completos, historic
     df_candidatos = pd.DataFrame(candidatos).sort_values(by='Puntuación Total', ascending=False).head(top_n_candidatos)
     df_candidatos['Numero'] = df_candidatos['Numero'].apply(lambda x: f"{x:02d}")
 
-    return df_oportunidad_decenas, df_oportunidad_unidades, df_candidatos
-
+    return df_oportunidad_decenas, df_oportunidad_unidades, df_candidatos, mapa_temperatura_decenas, mapa_temperatura_unidades
 
 # --- FUNCIÓN PARA BUSCAR PATRONES DE 3 FORMAS ---
 def buscar_patron_formas(df_historial, patron_formas):
@@ -636,19 +650,458 @@ def buscar_patron_formas_2(df_historial, patron_formas):
     
     return df_resultados
 
+# --- NUEVA FUNCIÓN PARA EL ANÁLISIS DE CICLOS (SISTEMA 1) ---
+def analizar_ciclos(df_historial, fecha_referencia, elemento='numero', min_apariciones=5):
+    """
+    Analiza los ciclos de aparición de números, decenas, unidades o formas.
+    Identifica patrones cíclicos y calcula el estado del ciclo actual.
+    
+    Parámetros:
+    - df_historial: DataFrame con el historial de sorteos
+    - fecha_referencia: Fecha hasta la cual se realiza el análisis
+    - elemento: Tipo de elemento a analizar ('numero', 'decena', 'unidad', 'forma')
+    - min_apariciones: Mínimo de apariciones para considerar un elemento en el análisis
+    
+    Retorna:
+    - DataFrame con información de ciclos para cada elemento
+    """
+    st.info(f"Analizando ciclos de {elemento}s hasta la fecha: {fecha_referencia.strftime('%d/%m/%Y')}")
+    
+    # Filtrar historial hasta la fecha de referencia
+    df_historial_filtrado = df_historial[df_historial['Fecha'] < fecha_referencia].copy()
+    if df_historial_filtrado.empty:
+        return pd.DataFrame()
+    
+    # Preparar datos según el tipo de elemento
+    if elemento == 'numero':
+        df_elementos = df_historial_filtrado.copy()
+        df_elementos['Elemento'] = df_elementos['Numero']
+        elementos_posibles = range(100)
+    elif elemento == 'decena':
+        df_elementos = df_historial_filtrado.copy()
+        df_elementos['Elemento'] = df_elementos['Numero'] // 10
+        elementos_posibles = range(10)
+    elif elemento == 'unidad':
+        df_elementos = df_historial_filtrado.copy()
+        df_elementos['Elemento'] = df_elementos['Numero'] % 10
+        elementos_posibles = range(10)
+    elif elemento == 'forma':
+        df_elementos = df_historial_filtrado.copy()
+        df_elementos['Elemento'] = df_elementos['Numero'].apply(calcular_forma_desde_numero)
+        elementos_posibles = df_elementos['Elemento'].unique()
+    else:
+        st.error(f"Tipo de elemento no válido: {elemento}")
+        return pd.DataFrame()
+    
+    # Analizar ciclos para cada elemento
+    resultados = []
+    
+    for elem in elementos_posibles:
+        # Filtrar apariciones del elemento
+        apariciones = df_elementos[df_elementos['Elemento'] == elem]['Fecha'].sort_values()
+        
+        # Si hay suficientes apariciones para analizar
+        if len(apariciones) >= min_apariciones:
+            # Calcular gaps (días entre apariciones consecutivas)
+            gaps = apariciones.diff().dt.days.dropna()
+            
+            if not gaps.empty:
+                # Estadísticas básicas de los gaps
+                gap_promedio = gaps.mean()
+                gap_mediana = gaps.median()
+                gap_min = gaps.min()
+                gap_max = gaps.max()
+                gap_std = gaps.std()
+                
+                # Calcular el gap actual (días desde la última aparición)
+                ultima_aparicion = apariciones.iloc[-1]
+                gap_actual = (fecha_referencia - ultima_aparicion).days
+                
+                # Determinar si el elemento sigue un patrón cíclico
+                # Usamos el coeficiente de variación (CV) para medir la regularidad
+                cv = gap_std / gap_promedio if gap_promedio > 0 else float('inf')
+                es_ciclico = cv < 0.5  # Si CV < 0.5, consideramos que hay un patrón cíclico
+                
+                # Calcular el estado del ciclo
+                if es_ciclico:
+                    # Calcular qué tan cerca estamos del próximo ciclo esperado
+                    # Si gap_actual está cerca del gap_promedio, el ciclo está "en punto"
+                    # Si gap_actual > gap_promedio, el ciclo está "vencido"
+                    proporcion_ciclo = gap_actual / gap_promedio
+                    
+                    if proporcion_ciclo < 0.8:
+                        estado_ciclo = "Temprano"
+                    elif proporcion_ciclo < 1.2:
+                        estado_ciclo = "En Punto"
+                    elif proporcion_ciclo < 1.5:
+                        estado_ciclo = "Vencido"
+                    else:
+                        estado_ciclo = "Muy Vencido"
+                else:
+                    # Si no es cíclico, usamos el estado normal
+                    estado_ciclo = "No Cíclico"
+                
+                # Añadir a los resultados
+                resultados.append({
+                    'Elemento': elem,
+                    'Total Apariciones': len(apariciones),
+                    'Gap Promedio (días)': round(gap_promedio, 1),
+                    'Gap Mediana (días)': round(gap_mediana, 1),
+                    'Gap Mínimo (días)': gap_min,
+                    'Gap Máximo (días)': gap_max,
+                    'Desviación Estándar': round(gap_std, 1),
+                    'Coeficiente Variación': round(cv, 2),
+                    'Es Cíclico': es_ciclico,
+                    'Última Aparición': ultima_aparicion.strftime('%d/%m/%Y'),
+                    'Gap Actual (días)': gap_actual,
+                    'Proporción Ciclo': round(proporcion_ciclo, 2) if es_ciclico else None,
+                    'Estado Ciclo': estado_ciclo
+                })
+    
+    # Crear DataFrame con los resultados
+    df_ciclos = pd.DataFrame(resultados)
+    
+    if not df_ciclos.empty:
+        # Ordenar por los elementos más cíclicos y más vencidos
+        df_ciclos = df_ciclos.sort_values(by=['Es Cíclico', 'Proporción Ciclo'], ascending=[False, False])
+        
+        # Añadir columna de puntuación de ciclo
+        def calcular_puntuacion_ciclo(row):
+            if not row['Es Cíclico']:
+                return 0
+            
+            # Puntuación base por estar en un estado de ciclo
+            puntuacion_base = {
+                'Temprano': 10,
+                'En Punto': 30,
+                'Vencido': 70,
+                'Muy Vencido': 100
+            }.get(row['Estado Ciclo'], 0)
+            
+            # Ajuste basado en la regularidad del ciclo (menor CV = más regular = más confiable)
+            ajuste_regularidad = max(0, 50 - row['Coeficiente Variación'] * 100)
+            
+            # Ajuste basado en la frecuencia (más apariciones = más confiable)
+            ajuste_frecuencia = min(50, row['Total Apariciones'] / 2)
+            
+            return puntuacion_base + ajuste_regularidad + ajuste_frecuencia
+        
+        df_ciclos['Puntuación Ciclo'] = df_ciclos.apply(calcular_puntuacion_ciclo, axis=1)
+        
+        # Ordenar por puntuación de ciclo
+        df_ciclos = df_ciclos.sort_values(by='Puntuación Ciclo', ascending=False)
+    
+    return df_ciclos
+
+# --- FUNCIÓN PARA VISUALIZAR CICLOS ---
+def visualizar_ciclos(df_ciclos, elemento='numero', top_n=10):
+    """
+    Visualiza los ciclos más prometedores para un tipo de elemento.
+    
+    Parámetros:
+    - df_ciclos: DataFrame con información de ciclos
+    - elemento: Tipo de elemento analizado
+    - top_n: Número de elementos a visualizar
+    """
+    if df_ciclos.empty:
+        st.warning(f"No hay datos de ciclos para {elemento}s.")
+        return
+    
+    # Filtrar solo los elementos cíclicos
+    df_ciclicos = df_ciclos[df_ciclos['Es Cíclico']].head(top_n)
+    
+    if df_ciclicos.empty:
+        st.warning(f"No se encontraron {elemento}s con patrones cíclicos claros.")
+        return
+    
+    st.subheader(f"Top {top_n} {elemento}s con Patrones Cíclicos")
+    
+    # Tabla con los ciclos más prometedores
+    columnas_mostrar = [
+        'Elemento', 'Total Apariciones', 'Gap Promedio (días)', 
+        'Gap Actual (días)', 'Proporción Ciclo', 'Estado Ciclo', 'Puntuación Ciclo'
+    ]
+    
+    st.dataframe(df_ciclicos[columnas_mostrar], width='stretch')
+    
+    # Visualización gráfica
+    if len(df_ciclicos) > 0:
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        # Ordenar por gap promedio
+        df_plot = df_ciclicos.sort_values('Gap Promedio (días)')
+        
+        # Crear gráfico de barras para gap promedio vs gap actual
+        x = np.arange(len(df_plot))
+        width = 0.35
+        
+        ax.bar(x - width/2, df_plot['Gap Promedio (días)'], width, label='Gap Promedio')
+        ax.bar(x + width/2, df_plot['Gap Actual (días)'], width, label='Gap Actual')
+        
+        # Añadir etiquetas con el estado del ciclo
+        for i, row in df_plot.iterrows():
+            idx = df_plot.index.get_loc(i)
+            ax.text(idx, row['Gap Actual (días)'] + 0.5, row['Estado Ciclo'], 
+                   ha='center', va='bottom', fontsize=8)
+        
+        ax.set_xlabel(f'{elemento.capitalize()}s')
+        ax.set_ylabel('Días')
+        ax.set_title(f'Análisis de Ciclos - {elemento.capitalize()}s')
+        ax.set_xticks(x)
+        ax.set_xticklabels(df_plot['Elemento'])
+        ax.legend()
+        
+        st.pyplot(fig)
+        
+        # Explicación de los resultados
+        st.markdown("""
+        ### Interpretación de los Resultados
+        
+        - **Gap Promedio**: Número promedio de días entre apariciones consecutivas.
+        - **Gap Actual**: Días transcurridos desde la última aparición.
+        - **Proporción Ciclo**: Relación entre Gap Actual y Gap Promedio.
+          - < 0.8: El ciclo está "Temprano"
+          - 0.8-1.2: El ciclo está "En Punto"
+          - 1.2-1.5: El ciclo está "Vencido"
+          - > 1.5: El ciclo está "Muy Vencido"
+        - **Puntuación Ciclo**: Puntuación combinada que considera el estado del ciclo, 
+          la regularidad y la frecuencia de apariciones.
+        """)
+
+# --- NUEVAS FUNCIONES PARA EL SISTEMA 2: MAPA DE CALOR POSICIONAL ---
+
+def crear_mapa_calor_posicional(mapa_temp_decenas, mapa_temp_unidades):
+    """
+    Crea una matriz 10x10 con puntuaciones basadas en la temperatura combinada de decenas y unidades.
+    """
+    # Asignar valores numéricos a la temperatura
+    temp_valores = {'🔥 Caliente': 3, '🟡 Tibio': 2, '🧊 Frío': 1}
+    
+    # Crear matriz 10x10 (Unidades vs Decenas)
+    matriz_calor = np.zeros((10, 10))
+    
+    for unidad in range(10):
+        for decena in range(10):
+            temp_dec = mapa_temp_decenas.get(decena, '🟡 Tibio')
+            temp_uni = mapa_temp_unidades.get(unidad, '🟡 Tibio')
+            
+            # Puntuación combinada (ej: 31 para Caliente-Frío, 13 para Frío-Caliente)
+            puntuacion = temp_valores[temp_dec] * 10 + temp_valores[temp_uni]
+            matriz_calor[unidad, decena] = puntuacion
+            
+    return pd.DataFrame(matriz_calor, index=range(10), columns=range(10))
+
+def analizar_combinaciones_extremas(mapa_temp_decenas, mapa_temp_unidades, df_estados_completos):
+    """
+    Analiza y clasifica los números según sus combinaciones de temperatura posicional.
+    """
+    hot_cold, cold_hot, hot_hot, cold_cold = [], [], [], []
+    puntuaciones_desequilibrio = {}
+
+    for num in range(100):
+        decena = num // 10
+        unidad = num % 10
+        
+        temp_dec = mapa_temp_decenas.get(decena, '🟡 Tibio')
+        temp_uni = mapa_temp_unidades.get(unidad, '🟡 Tibio')
+        
+        # Calcular puntuación de desequilibrio (máxima para Hot-Cold y Cold-Hot)
+        temp_valores = {'🔥 Caliente': 3, '🟡 Tibio': 2, '🧊 Frío': 1}
+        score_dec = temp_valores[temp_dec]
+        score_uni = temp_valores[temp_uni]
+        puntuacion_desequilibrio = abs(score_dec - score_uni)
+        
+        puntuaciones_desequilibrio[num] = puntuacion_desequilibrio
+        
+        num_str = f"{num:02d}"
+        
+        if temp_dec == '🔥 Caliente' and temp_uni == '🧊 Frío':
+            hot_cold.append(num_str)
+        elif temp_dec == '🧊 Frío' and temp_uni == '🔥 Caliente':
+            cold_hot.append(num_str)
+        elif temp_dec == '🔥 Caliente' and temp_uni == '🔥 Caliente':
+            hot_hot.append(num_str)
+        elif temp_dec == '🧊 Frío' and temp_uni == '🧊 Frío':
+            cold_cold.append(num_str)
+
+    # Ordenar listas por puntuación de desequilibrio (mayor a menor)
+    hot_cold.sort(key=lambda x: puntuaciones_desequilibrio[int(x)], reverse=True)
+    cold_hot.sort(key=lambda x: puntuaciones_desequilibrio[int(x)], reverse=True)
+    hot_hot.sort(key=lambda x: puntuaciones_desequilibrio[int(x)], reverse=True)
+    cold_cold.sort(key=lambda x: puntuaciones_desequilibrio[int(x)], reverse=True)
+    
+    # Crear DataFrames
+    df_hot_cold = pd.DataFrame({'Número': hot_cold, 'Puntuación Desequilibrio': [puntuaciones_desequilibrio[int(x)] for x in hot_cold]})
+    df_cold_hot = pd.DataFrame({'Número': cold_hot, 'Puntuación Desequilibrio': [puntuaciones_desequilibrio[int(x)] for x in cold_hot]})
+    df_hot_hot = pd.DataFrame({'Número': hot_hot, 'Puntuación Desequilibrio': [puntuaciones_desequilibrio[int(x)] for x in hot_hot]})
+    df_cold_cold = pd.DataFrame({'Número': cold_cold, 'Puntuación Desequilibrio': [puntuaciones_desequilibrio[int(x)] for x in cold_cold]})
+    
+    return df_hot_cold, df_cold_hot, df_hot_hot, df_cold_cold
+
+# --- NUEVA FUNCIÓN PARA EL MODELO PREDICTIVO BASADO EN COINCIDENCIAS ---
+def analizar_coincidencias_ponderadas(df_clasificacion_general, calientes_con_oportunidad, 
+                                   resultado_final, numeros_por_paridad, df_estados_completos,
+                                   mapa_temp_decenas, mapa_temp_unidades,
+                                   peso_temperatura, peso_oportunidad, peso_estados, 
+                                   peso_paridad, peso_extremos, top_n=20):
+    """
+    Versión que permite ponderar cada análisis según la configuración del usuario.
+    """
+    # Crear un DataFrame base con todos los números (00-99)
+    df_coincidencias = pd.DataFrame({'Numero': [f"{i:02d}" for i in range(100)]})
+    df_coincidencias['Numero_int'] = range(100)  # Para operaciones numéricas
+    
+    # Inicializar columnas de puntuación
+    df_coincidencias['Puntuación Total'] = 0
+    df_coincidencias['Coincidencias'] = 0
+    df_coincidencias['Análisis que coinciden'] = ""
+    
+    # 1. Análisis de Temperatura (Mapa de Calor)
+    calientes = df_clasificacion_general[df_clasificacion_general['Temperatura'] == '🔥 Caliente']['Numero'].tolist()
+    df_coincidencias.loc[df_coincidencias['Numero_int'].isin(calientes), 'Puntuación Total'] += peso_temperatura
+    df_coincidencias.loc[df_coincidencias['Numero_int'].isin(calientes), 'Coincidencias'] += 1
+    df_coincidencias.loc[df_coincidencias['Numero_int'].isin(calientes), 'Análisis que coinciden'] += "Temperatura, "
+    
+    # 2. Números Calientes con Oportunidad
+    if not calientes_con_oportunidad.empty:
+        numeros_oportunidad = calientes_con_oportunidad['Numero'].tolist()
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_oportunidad), 'Puntuación Total'] += peso_oportunidad
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_oportunidad), 'Coincidencias'] += 1
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_oportunidad), 'Análisis que coinciden'] += "Oportunidad, "
+    
+    # 3. Números Calientes con Estados Salidores
+    if not resultado_final.empty:
+        numeros_estados_salidores = resultado_final['Numero'].tolist()
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_estados_salidores), 'Puntuación Total'] += peso_estados
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_estados_salidores), 'Coincidencias'] += 1
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_estados_salidores), 'Análisis que coinciden'] += "Estados Salidores, "
+    
+    # 4. Análisis de Paridad
+    if numeros_por_paridad:
+        # Obtener las 3 paridades más salidoras
+        paridades_top = []
+        for paridad, df in numeros_por_paridad.items():
+            if not df.empty:
+                paridades_top.append((paridad, df.iloc[0]['Total_Salidas_Historico']))
+        
+        # Ordenar por frecuencia y tomar las 3 principales
+        paridades_top.sort(key=lambda x: x[1], reverse=True)
+        top_3_paridades = [p[0] for p in paridades_top[:3]]
+        
+        # Obtener números de estas paridades
+        numeros_paridades_top = []
+        for paridad in top_3_paridades:
+            if paridad in numeros_por_paridad and not numeros_por_paridad[paridad].empty:
+                numeros_paridades_top.extend(numeros_por_paridad[paridad]['Numero'].tolist())
+        
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_paridades_top), 'Puntuación Total'] += peso_paridad
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_paridades_top), 'Coincidencias'] += 1
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_paridades_top), 'Análisis que coinciden'] += "Paridad Top, "
+    
+    # 5. Análisis de Temperatura Posicional (Mapa de Calor Posicional)
+    df_hot_cold, df_cold_hot, df_hot_hot, df_cold_cold = analizar_combinaciones_extremas(
+        mapa_temp_decenas, mapa_temp_unidades, df_estados_completos)
+    
+    # Combinaciones extremas tienen mayor puntuación
+    if not df_hot_cold.empty:
+        numeros_hot_cold = [int(n) for n in df_hot_cold.head(5)['Número'].tolist()]
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_hot_cold), 'Puntuación Total'] += peso_extremos
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_hot_cold), 'Coincidencias'] += 1
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_hot_cold), 'Análisis que coinciden'] += "Caliente-Frío, "
+    
+    if not df_cold_hot.empty:
+        numeros_cold_hot = [int(n) for n in df_cold_hot.head(5)['Número'].tolist()]
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_cold_hot), 'Puntuación Total'] += peso_extremos
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_cold_hot), 'Coincidencias'] += 1
+        df_coincidencias.loc[df_coincidencias['Numero_int'].isin(numeros_cold_hot), 'Análisis que coinciden'] += "Frío-Caliente, "
+    
+    # Ordenar por puntuación total y coincidencias
+    df_coincidencias = df_coincidencias.sort_values(by=['Puntuación Total', 'Coincidencias'], ascending=False)
+    
+    # Añadir información adicional
+    df_resultado = df_coincidencias.head(top_n).merge(
+        df_estados_completos[['Numero', 'Forma_Calculada', 'Combinación Paridad', 
+                             'Estado_Numero', 'Estado_Decena', 'Estado_Unidad', 
+                             'Combinar_Estado_Actual', 'Total_Salidas_Historico']],
+        left_on='Numero_int', right_on='Numero', how='left'
+    )
+    
+    # Eliminar columnas duplicadas y reorganizar
+    df_resultado = df_resultado.drop(columns=['Numero_y'])
+    df_resultado = df_resultado.rename(columns={'Numero_x': 'Número'})
+    
+    # Reorganizar columnas para mejor visualización
+    columnas_orden = [
+        'Número', 'Puntuación Total', 'Coincidencias', 'Análisis que coinciden',
+        'Forma_Calculada', 'Combinación Paridad', 'Estado_Numero', 
+        'Estado_Decena', 'Estado_Unidad', 'Combinar_Estado_Actual', 
+        'Total_Salidas_Historico'
+    ]
+    
+    return df_resultado[columnas_orden]
+
+# --- NUEVA FUNCIÓN PARA EL EXPLORADOR DE NÚMEROS PERSONALIZADO ---
+def explorador_numeros_personalizados(numeros_ingresados, df_estados_completos):
+    """
+    Muestra información detallada de números específicos ingresados por el usuario.
+    """
+    # Convertir números ingresados a enteros y asegurarse de que estén en formato de dos dígitos
+    numeros_procesados = []
+    for num_str in numeros_ingresados:
+        try:
+            # Eliminar espacios y convertir a entero
+            num_int = int(str(num_str).strip())
+            if 0 <= num_int <= 99:
+                numeros_procesados.append(num_int)
+        except (ValueError, TypeError):
+            continue
+    
+    if not numeros_procesados:
+        return pd.DataFrame()
+    
+    # Filtrar el DataFrame para obtener solo los números ingresados
+    df_resultado = df_estados_completos[df_estados_completos['Numero'].isin(numeros_procesados)].copy()
+    
+    # Ordenar por número
+    df_resultado = df_resultado.sort_values('Numero')
+    
+    # Formatear el número como dos dígitos
+    df_resultado['Número'] = df_resultado['Numero'].apply(lambda x: f"{x:02d}")
+    
+    # Seleccionar columnas relevantes
+    columnas_relevantes = [
+        'Número', 'Forma_Calculada', 'Combinación Paridad', 'Estado_Numero', 
+        'Estado_Decena', 'Estado_Unidad', 'Combinar_Estado_Actual', 
+        'Total_Salidas_Historico', 'Salto_Numero', 'Última Aparición (Fecha)'
+    ]
+    
+    # Renombrar columnas para mayor claridad
+    df_resultado = df_resultado[columnas_relevantes].rename(columns={
+        'Forma_Calculada': 'Forma',
+        'Combinación Paridad': 'Paridad',
+        'Estado_Numero': 'Estado del Número',
+        'Estado_Decena': 'Estado de la Decena',
+        'Estado_Unidad': 'Estado de la Unidad',
+        'Combinar_Estado_Actual': 'Estado Combinado',
+        'Total_Salidas_Historico': 'Total de Salidas Histórico',
+        'Salto_Numero': 'Días de Ausencia',
+        'Última Aparición (Fecha)': 'Última Aparición'
+    })
+    
+    return df_resultado
 
 # --- CARGA Y PROCESAMIENTO UNIFICADO DE DATOS ---
 @st.cache_resource
 def cargar_datos_georgia(_ruta_csv, debug_mode=False):
     try:
         st.info("Cargando y procesando datos históricos de Georgia...")
-        # Modificado para usar la ruta absoluta directamente
+        # CAMBIO: Usando ruta relativa para compatibilidad con la nube
         ruta_csv_absoluta = _ruta_csv
         
         if not os.path.exists(ruta_csv_absoluta):
             st.error(f"❌ Error: No se encontró el archivo de datos de Georgia.")
             st.error(f"La aplicación buscó el archivo en la ruta: {ruta_csv_absoluta}")
-            st.warning("💡 **Solución:** Asegúrate de que la carpeta 'Formasalidor' y el archivo 'Geosalidor.csv' existan.")
+            st.warning("💡 **Solución:** Asegúrate de que el archivo 'Geosalidor.csv' exista en el mismo directorio que la aplicación.")
             st.stop()
         df_historial = pd.read_csv(ruta_csv_absoluta, sep=';', encoding='latin-1')
 
@@ -671,19 +1124,13 @@ def cargar_datos_georgia(_ruta_csv, debug_mode=False):
                 clean_col = remove_accents(col).strip().lower()
                 if clean_col == clean_target_paridad:
                     col_paridad_encontrada = col
-                    st.success(f"✅ Coincidencia encontrada: `{col}`")
-                    break
-            if not col_paridad_encontrada:
-                st.error(f"❌ No se encontró ninguna coincidencia para '{target_paridad}'.")
+                if clean_col == clean_target_saltos:
+                    col_saltos_encontrada = col
             st.write(f"**Buscando objetivo 2:** `{target_saltos}`")
             for col in columnas_encontradas:
                 clean_col = remove_accents(col).strip().lower()
                 if clean_col == clean_target_saltos:
                     col_saltos_encontrada = col
-                    st.success(f"✅ Coincidencia encontrada: `{col}`")
-                    break
-            if not col_saltos_encontrada:
-                st.error(f"❌ No se encontró ninguna coincidencia para '{target_saltos}'.")
             st.markdown("---")
             st.subheader("Vista Previa de las Columnas Encontradas")
             if col_paridad_encontrada and col_saltos_encontrada:
@@ -691,7 +1138,7 @@ def cargar_datos_georgia(_ruta_csv, debug_mode=False):
             else:
                 st.warning("No se pueden mostrar las columnas porque una o ambas no fueron encontradas.")
 
-        posibles_cols_numero = ['Resultado', 'Resultado ', 'Numero', 'Numero ', 'Número', 'Número ', 'Ganador', 'Ganador ']
+        posibles_cols_numero = ['Resultado', 'Resultado ', 'Numero', 'Numero ', 'Número', 'Ganador', 'Ganador ']
         col_numero_encontrada = None
         for col in df_historial.columns:
             if col in posibles_cols_numero:
@@ -738,6 +1185,7 @@ def cargar_datos_georgia(_ruta_csv, debug_mode=False):
         # --- CORRECCIÓN CLAVE: ORDENAR CRONOLÓGICAMENTE AQUÍ TAMBIÉN ---
         # Esto asegura que el df_historial principal usado para todo esté ordenado.
         if 'Tipo_Sorteo' in df_historial.columns:
+            # CAMBIO: Mapa de orden de sorteos actualizado para M, T, N
             draw_order_map = {'M': 0, 'T': 1, 'N': 2}
             df_historial['draw_order'] = df_historial['Tipo_Sorteo'].map(draw_order_map).fillna(3)
             df_historial['sort_key'] = df_historial['Fecha'] + pd.to_timedelta(df_historial['draw_order'], unit='h')
@@ -800,7 +1248,7 @@ def main():
     
     fecha_inicio_rango, fecha_fin_rango = None, None
     if modo_temperatura == "Personalizado por Rango":
-        st.sidebar.markdown("**Selecciona el rango de fechas (Almanaque):**")
+        st.sidebar.markdown("**Selecciona el rango de fechas (AlMANAQUE):**")
         fecha_inicio_rango = st.sidebar.date_input("Fecha de Inicio:", value=fecha_referencia - pd.Timedelta(days=30), format="DD/MM/YYYY")
         fecha_fin_rango = st.sidebar.date_input("Fecha de Fin:", value=fecha_referencia - pd.Timedelta(days=1), format="DD/MM/YYYY")
         if fecha_inicio_rango > fecha_fin_rango:
@@ -810,6 +1258,25 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.subheader("🏆 Análisis de Top Números")
     top_n_candidatos = st.slider("Top N de Números Candidatos a mostrar:", min_value=1, max_value=20, value=5, step=1)
+
+    # --- NUEVO SELECTOR PARA ANÁLISIS DE CICLOS ---
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔄 Análisis de Ciclos")
+    activar_analisis_ciclos = st.sidebar.checkbox("Activar Análisis de Ciclos", value=False)
+    
+    if activar_analisis_ciclos:
+        elemento_ciclo = st.sidebar.selectbox(
+            "Tipo de elemento para análisis de ciclos:",
+            ["numero", "decena", "unidad", "forma"]
+        )
+        min_apariciones_ciclo = st.sidebar.slider(
+            "Mínimo de apariciones para considerar en el análisis:",
+            min_value=3, max_value=20, value=5, step=1
+        )
+        top_n_ciclos = st.sidebar.slider(
+            "Top N de elementos cíclicos a mostrar:",
+            min_value=5, max_value=30, value=10, step=1
+        )
 
     st.sidebar.markdown("---")
     if st.sidebar.button("🔄 Forzar Recarga de Datos"):
@@ -861,11 +1328,119 @@ def main():
         fecha_fin_rango_safe = pd.to_datetime(fecha_fin_rango) if fecha_fin_rango else None
         
         # --- MODIFICACIÓN: Pasar el valor del slider a la función ---
-        df_oportunidad_decenas, df_oportunidad_unidades, top_candidatos = analizar_oportunidad_por_digito(
+        df_oportunidad_decenas, df_oportunidad_unidades, top_candidatos, mapa_temp_decenas, mapa_temp_unidades = analizar_oportunidad_por_digito(
             df_historial, df_estados_completos, historicos_decena, historicos_unidad, 
             modo_temperatura, fecha_inicio_rango_safe, fecha_fin_rango_safe,
             top_n_candidatos
         )
+        
+        # --- NUEVO: ANÁLISIS DE CICLOS (SI ESTÁ ACTIVADO) ---
+        if activar_analisis_ciclos:
+            st.markdown("---")
+            st.header("🔄 Análisis de Ciclos")
+            st.markdown("""
+            Este análisis busca patrones cíclicos en la aparición de los elementos seleccionados. 
+            Identifica elementos que siguen ritmos predecibles y calcula su estado actual del ciclo.
+            """)
+            
+            df_ciclos = analizar_ciclos(df_historial, fecha_referencia, elemento_ciclo, min_apariciones_ciclo)
+            visualizar_ciclos(df_ciclos, elemento_ciclo, top_n_ciclos)
+        
+        # --- NUEVA SECCIÓN: SISTEMA 2 - MAPA DE CALOR POSICIONAL ---
+        st.markdown("---")
+        st.header("🗺️ Sistema 2: Mapa de Calor Posicional")
+        st.markdown("""
+        Este sistema analiza la "temperatura" de cada posición (Decenas y Unidades) por separado 
+        para encontrar combinaciones extremas y oportunidades de desequilibrio.
+        """)
+        
+        # Crear el mapa de calor posicional
+        df_mapa_calor = crear_mapa_calor_posicional(mapa_temp_decenas, mapa_temp_unidades)
+        
+        # Analizar combinaciones extremas
+        df_hot_cold, df_cold_hot, df_hot_hot, df_cold_cold = analizar_combinaciones_extremas(mapa_temp_decenas, mapa_temp_unidades, df_estados_completos)
+        
+        # Visualización del mapa de calor
+        st.subheader("Mapa de Calor de Combinaciones Posicionales")
+        st.markdown("""
+        **Cómo leer este mapa:**
+        - **Eje X (horizontal):** Dígito de la Decena (0-9)
+        - **Eje Y (vertical):** Dígito de la Unidad (0-9)
+        - **Colores:** Representan la combinación de temperatura. Los colores más intensos indican un mayor desequilibrio.
+        """)
+        
+        # Crear un mapa de colores personalizado
+        colors = ["#313695", "#4575b4", "#74add1", "#abd9e9", "#e0f3f8", "#ffffcc", "#fee090", "#fdae61", "#f46d43", "#d73027", "#a50026"]
+        cmap = sns.color_palette("RdYlGn_r", as_cmap=True)
+        
+        fig, ax = plt.subplots(figsize=(12, 10))
+        sns.heatmap(df_mapa_calor, annot=True, fmt=".0f", cmap=cmap, center=22, 
+                   xticklabels=range(10), yticklabels=range(10),
+                   cbar_kws={'label': 'Puntuación de Temperatura Combinada'})
+        ax.set_xlabel('Dígito de la Decena')
+        ax.set_ylabel('Dígito de la Unidad')
+        ax.set_title('Mapa de Calor Posicional - Temperatura Combinada de Decenas y Unidades')
+        st.pyplot(fig)
+        
+        # --- CORRECCIÓN: Mostrar las CUATRO combinaciones en dos columnas ---
+        st.markdown("---")
+        st.subheader("📊 Análisis de Combinaciones Extremas")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("🔥🧊 Caliente-Frío (Máxima Oportunidad)")
+            st.markdown("Números donde la decena está muy caliente y la unidad muy fría.")
+            if not df_hot_cold.empty:
+                st.dataframe(df_hot_cold, width='stretch', hide_index=True)
+            else:
+                st.warning("No hay combinaciones Caliente-Frío en el período analizado.")
+            
+            st.markdown("---") # Separador dentro de la columna
+            
+            st.subheader("🔥🔥 Doble Caliente (Alta Probabilidad)")
+            st.markdown("Números donde ambas posiciones están muy calientes.")
+            if not df_hot_hot.empty:
+                st.dataframe(df_hot_hot, width='stretch', hide_index=True)
+            else:
+                st.warning("No hay combinaciones Doble Caliente en el período analizado.")
+        
+        with col2:
+            st.subheader("🧊🔥 Frío-Caliente (Segunda Oportunidad)")
+            st.markdown("Números donde la unidad está muy caliente y la decena muy fría.")
+            if not df_cold_hot.empty:
+                st.dataframe(df_cold_hot, width='stretch', hide_index=True)
+            else:
+                st.warning("No hay combinaciones Frío-Caliente en el período analizado.")
+            
+            st.markdown("---") # Separador dentro de la columna
+            
+            st.subheader("🧊🧊 Doble Frío (Posible Sorpresa)")
+            st.markdown("Números donde ambas posiciones están muy frías.")
+            if not df_cold_cold.empty:
+                st.dataframe(df_cold_cold, width='stretch', hide_index=True)
+            else:
+                st.warning("No hay combinaciones Doble Frío en el período analizado.")
+
+        # --- Recomendaciones estratégicas (ahora sí aparecen después de las 4 columnas) ---
+        st.markdown("---")
+        st.subheader("💡 Recomendaciones Estratégicas")
+        
+        if not df_hot_cold.empty:
+            top_hot_cold = df_hot_cold.head(3)['Número'].tolist()
+            st.success(f"**Oportunidad Principal:** Considera los números {', '.join(top_hot_cold)}. Tienen una alta probabilidad de corrección (la parte fría podría 'calentarse').")
+        
+        if not df_cold_hot.empty:
+            top_cold_hot = df_cold_hot.head(3)['Número'].tolist()
+            st.info(f"**Oportunidad Secundaria:** Los números {', '.join(top_cold_hot)} también son candidatos interesantes por su desequilibrio inverso.")
+        
+        if not df_hot_hot.empty:
+            top_hot_hot = df_hot_hot.head(3)['Número'].tolist()
+            st.warning(f"**Alta Probabilidad:** Los números {', '.join(top_hot_hot)} tienen ambas posiciones calientes, lo que indica alta probabilidad de aparición.")
+        
+        if not df_cold_cold.empty:
+            top_cold_cold = df_cold_cold.head(3)['Número'].tolist()
+            st.error(f"**Posible Sorpresa:** Los números {', '.join(top_cold_cold)} tienen ambas posiciones frías, lo que podría indicar una sorpresa inminente.")
         
         estados_posibles = ["Normal", "Vencido", "Muy Vencido"]
         combinaciones_posibles = [f"{d}-{u}" for d in estados_posibles for u in estados_posibles]
@@ -1092,6 +1667,116 @@ def main():
         st.markdown(f"A continuación se muestran los {top_n_candidatos} números cuya suma de **Puntuación Total** (Decena + Unidad) es más alta. Esta puntuación ahora incluye la influencia de la **Temperatura** del rango de fechas seleccionado.")
         st.dataframe(top_candidatos, width='stretch', hide_index=True)
 
+        # --- NUEVA SECCIÓN: MODELO PREDICTIVO BASADO EN COINCIDENCIAS ---
+        st.markdown("---")
+        st.header("🤖 Modelo Predictivo Basado en Coincidencias")
+        st.markdown("""
+        Este análisis identifica los números con mayor potencial basándose en coincidencias entre múltiples análisis:
+        - Temperatura (números calientes)
+        - Oportunidad (números calientes y vencidos)
+        - Estados salidores
+        - Paridades más frecuentes
+        - Combinaciones extremas de temperatura posicional
+        """)
+
+        with st.sidebar:
+            st.subheader("⚙️ Configuración del Modelo Predictivo")
+            top_n_coincidencias = st.slider("Top N de números a mostrar:", min_value=5, max_value=30, value=10, step=1)
+            
+            st.markdown("**Ponderación de análisis:**")
+            peso_temperatura = st.slider("Peso Temperatura:", min_value=0, max_value=5, value=1, step=1)
+            peso_oportunidad = st.slider("Peso Oportunidad:", min_value=0, max_value=5, value=2, step=1)
+            peso_estados = st.slider("Peso Estados Salidores:", min_value=0, max_value=5, value=2, step=1)
+            peso_paridad = st.slider("Peso Paridad:", min_value=0, max_value=5, value=1, step=1)
+            peso_extremos = st.slider("Peso Combinaciones Extremas:", min_value=0, max_value=5, value=3, step=1)
+
+        if st.button("🔍 Analizar Coincidencias"):
+            df_coincidencias = analizar_coincidencias_ponderadas(
+                df_clasificacion_general, calientes_con_oportunidad, resultado_final, 
+                numeros_por_paridad, df_estados_completos, mapa_temp_decenas, mapa_temp_unidades,
+                peso_temperatura, peso_oportunidad, peso_estados, peso_paridad, peso_extremos,
+                top_n=top_n_coincidencias
+            )
+            
+            if not df_coincidencias.empty:
+                st.success(f"Se encontraron {len(df_coincidencias)} números con múltiples coincidencias.")
+                st.dataframe(df_coincidencias, width='stretch', hide_index=True)
+                
+                # Opción para ver detalles de un número específico
+                numero_detalle = st.selectbox(
+                    "Selecciona un número para ver detalles:",
+                    options=df_coincidencias['Número'].tolist()
+                )
+                
+                if numero_detalle:
+                    num_int = int(numero_detalle)
+                    detalles = df_estados_completos[df_estados_completos['Numero'] == num_int].iloc[0]
+                    
+                    st.markdown("---")
+                    st.subheader(f"📋 Detalles del Número {numero_detalle}")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Forma", detalles['Forma_Calculada'])
+                        st.metric("Paridad", detalles['Combinación Paridad'])
+                        st.metric("Estado del Número", detalles['Estado_Numero'])
+                    
+                    with col2:
+                        st.metric("Estado de la Decena", detalles['Estado_Decena'])
+                        st.metric("Estado de la Unidad", detalles['Estado_Unidad'])
+                        st.metric("Estado Combinado", detalles['Combinar_Estado_Actual'])
+                    
+                    st.markdown("---")
+                    st.subheader("📈 Historial del Número")
+                    historial_numero = df_historial[df_historial['Numero'] == num_int].tail(10)
+                    if not historial_numero.empty:
+                        historial_numero['Fecha'] = historial_numero['Fecha'].dt.strftime('%d/%m/%Y')
+                        st.dataframe(historial_numero[['Fecha', 'Tipo_Sorteo', 'Forma_Calculada']], width='stretch', hide_index=True)
+                    else:
+                        st.warning("No hay historial disponible para este número.")
+            else:
+                st.warning("No se encontraron coincidencias significativas.")
+
+        # --- NUEVA SECCIÓN: EXPLORADOR DE NÚMEROS PERSONALIZADO ---
+        st.markdown("---")
+        st.header("🔎 Explorador de Números Personalizado")
+        st.markdown("""
+        Ingresa números específicos para ver sus características detalladas.
+        Puedes ingresar los números separados por comas, espacios o uno por línea.
+        """)
+
+        # Área de texto para ingresar números
+        numeros_ingresados_texto = st.text_area(
+            "Ingresa los números (ej: 05, 12, 23, 34, 45):",
+            placeholder="Ej: 05, 12, 23, 34, 45",
+            height=100
+        )
+
+        if st.button("🔍 Analizar Números Ingresados"):
+            if numeros_ingresados_texto:
+                # Procesar los números ingresados
+                numeros_lista = [num.strip() for num in numeros_ingresados_texto.replace(',', ' ').replace('\n', ' ').split()]
+                
+                # Analizar los números
+                df_explorador = explorador_numeros_personalizados(numeros_lista, df_estados_completos)
+                
+                if not df_explorador.empty:
+                    st.success(f"Análisis de {len(df_explorador)} números:")
+                    st.dataframe(df_explorador, width='stretch', hide_index=True)
+                    
+                    # Opción de descargar los resultados
+                    csv = df_explorador.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Descargar resultados como CSV",
+                        data=csv,
+                        file_name=f'analisis_numeros_{datetime.now().strftime("%Y%m%d")}.csv',
+                        mime='text/csv'
+                    )
+                else:
+                    st.warning("No se pudieron procesar los números ingresados. Asegúrate de que sean números válidos entre 00 y 99.")
+            else:
+                st.warning("Por favor, ingresa al menos un número para analizar.")
+
         st.markdown("---")
         st.header("🔀 Análisis de Paridad")
         st.markdown(f"Estado de cada número (00-99) hasta la fecha de referencia **{fecha_referencia.strftime('%d/%m/%Y')}** basado en el comportamiento de su grupo de **Rango y Paridad (16 combinaciones)**.")
@@ -1143,7 +1828,7 @@ def main():
                 estados_paridad_posibles = sorted(df_estados_completos['Estado_Paridad'].unique())
                 default_estados_paridad = st.session_state.get('estados_paridad_debidos_act', [])
                 estados_paridad_seleccionados = st.multiselect(
-                    "Selecciona Estados de Paridad:", 
+                    "Seleccionar Estados de Paridad:", 
                     options=estados_paridad_posibles, 
                     default=default_estados_paridad
                 )
@@ -1191,7 +1876,6 @@ def main():
             else:
                 df_explorado_con_ranking = df_explorado.copy()
                 df_explorado_con_ranking['Ranking Histórico (Salidas)'] = df_explorado_con_ranking['Total_Salidas_Historico'].rank(method='dense', ascending=False).astype(int)
-                # CORREGIDO: Cambiado 'Forma_Caldelada' por 'Forma_Calculada'
                 columnas_orden = ['Numero', 'Ranking Histórico (Salidas)', 'Total_Salidas_Historico', 'Salto_Numero', 'Estado_Numero', 'Estado_Decena', 'Estado_Unidad', 'Combinar_Estado_Actual', 'Forma_Calculada']
                 df_explorado_con_ranking = df_explorado_con_ranking[columnas_orden]
                 st.subheader(f"Números de la Forma: **{forma_explorador}**")
@@ -1204,6 +1888,39 @@ def main():
                 })
                 st.dataframe(df_display, width='stretch')
 
+        # --- NUEVA SECCIÓN: CONFIGURACIÓN MANUAL DE ESTADOS ---
+        st.markdown("---")
+        st.header("⚙️ Configuración Manual de Estado por Dígito")
+        st.markdown("Sobrescribe el cálculo automático para forzar un estado específico a un dígito.")
+        
+        opciones_estado = ['Automático (Calcular)', 'Normal', 'Vencido', 'Muy Vencido']
+        
+        for i in range(10):
+            if f'estado_decena_{i}' not in st.session_state:
+                st.session_state[f'estado_decena_{i}'] = 'Automático (Calcular)'
+            if f'estado_unidad_{i}' not in st.session_state:
+                st.session_state[f'estado_unidad_{i}'] = 'Automático (Calcular)'
+
+        col_conf_dec, col_conf_uni = st.columns(2)
+        with col_conf_dec:
+            st.write("**Decenas**")
+            for i in range(10):
+                st.session_state[f'estado_decena_{i}'] = st.selectbox(
+                    f"Dígito {i}", 
+                    opciones_estado, 
+                    key=f'decena_{i}',
+                    index=opciones_estado.index(st.session_state[f'estado_decena_{i}'])
+                )
+        with col_conf_uni:
+            st.write("**Unidades**")
+            for i in range(10):
+                st.session_state[f'estado_unidad_{i}'] = st.selectbox(
+                    f"Dígito {i}", 
+                    opciones_estado, 
+                    key=f'unidad_{i}',
+                    index=opciones_estado.index(st.session_state[f'estado_unidad_{i}'])
+                )
+
         # --- SECCIÓN 1: BÚSQUEDA DE PATRONES DE 3 FORMAS ---
         st.markdown("---")
         st.header("🔍 Búsqueda de Patrones Secuenciales de Formas")
@@ -1211,7 +1928,7 @@ def main():
 
         # --- DEPURACIÓN: Mostrar las últimas filas para verificar el orden ---
         with st.expander("🔍 Verificar Últimos Sorteos (Depuración)"):
-            st.markdown("A continuación se muestran las últimas 5 filas del historial ordenado cronológicamente. **Verifica que el orden y las formas coinciden con tus expectativas.**")
+            st.markdown("A continuación se muestran las últimas 5 filas del historial ordenado cronológicamente. **Verifica que el orden y las formas coinciden con tus expectativas.")
             df_verificacion = df_historial.tail(5)[['Fecha', 'Tipo_Sorteo', 'Numero', 'Forma_Calculada']].copy()
             df_verificacion['Fecha'] = df_verificacion['Fecha'].dt.strftime('%d/%m/%Y')
             st.dataframe(df_verificacion, hide_index=True)
@@ -1312,7 +2029,5 @@ def main():
         else:
             st.warning("Se necesitan al menos 2 sorteos para poder analizar un patrón de 2 formas.")
 
-
 if __name__ == "__main__":
-
     main()
