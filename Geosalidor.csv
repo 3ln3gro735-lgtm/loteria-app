@@ -1104,3 +1104,6 @@ Fecha;Sorteo;Resultado ;Decena;Unidad;Paridad D;Altura D;Forma D;Paridad U;Altur
 8/2/2026;M;67;6;7;Par;Alto;Cerrado;Impar;Alto;Recto;2;10;Normal;Muy Vencido;Normal-Muy Vencido;CR;Muy Vencido;4;Muy Vencida;7;10;Domingo ;46061;M;67;AltoAlto-Par-Impar;2;Normal;AltoAlto-Par-Impar;2;Normal
 8/2/2026;T;71;7;1;Impar;Alto;Recto;Impar;Bajo;Recto;7;8;Muy Vencido;Muy Vencido;Muy Vencido-Muy Vencido;RR;Muy Vencido;8;Normal;2;18;Lunes;46061;T;71;AltoBajo-Impar-Impar;8;Vencido;AltoBajo-Impar-Impar;8;Vencido
 8/2/2026;N;3;0;3;Par;Bajo;Cerrado;Impar;Bajo;Abierto;3;5;Vencido;Muy Vencido;Vencido-Muy Vencido;CA;Normal;3;Muy Vencida;7;1;Martes;46061;N;3;BajoBajo-Par-Impar;6;Normal;BajoBajo-Par-Impar;6;Normal
+9/2/2026;M;85;8;5;Par;Alto;Cerrado;Impar;Alto;Abierto;3;2;Vencido;Normal;Vencido-Normal;CA;Normal;4;Normal;1;1;Lunes;9/2/2026;M;85;AltoAlto-Par-Impar;1;Normal;AltoAlto-Par-Impar;1;Normal
+9/2/2026;T;73;7;3;Impar;Alto;Recto;Impar;Bajo;Abierto;1;1;Normal;Normal;Normal-Normal;RA;Normal;1;Normal;3;2;Lunes;9/2/2026;T;73;AltoBajo-Impar-Impar;1;Normal;AltoBajo-Impar-Impar;1;Normal
+9/2/2026;N;61;6;1;Par;Alto;Cerrado;Impar;Bajo;Recto;1;1;Normal;Normal;Normal-Normal;CR;Normal;7;Muy Vencida;7;1;Lunes;9/2/2026;N;61;AltoBajo-Par-Impar;14;Sin Datos;AltoBajo-Par-Impar;14;Sin Datos
